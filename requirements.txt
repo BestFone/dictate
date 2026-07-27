@@ -1,0 +1,5 @@
+sounddevice
+websocket-client
+keyboard
+pystray
+Pillow

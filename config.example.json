@@ -1,0 +1,13 @@
+{
+  "api_key": "",
+  "hotkey": "windows+ctrl+space",
+  "mode": "live",
+  "language_codes": [
+    "en"
+  ],
+  "speech_model": "universal-3-5-pro",
+  "sample_rate": 16000,
+  "input_device": null,
+  "autopaste": true,
+  "streaming_mode": "balanced"
+}
