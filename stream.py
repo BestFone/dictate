@@ -113,6 +113,10 @@ class StreamSession(threading.Thread):
         while True:
             try:
                 raw = self.ws.recv()
+            except websocket.WebSocketTimeoutException:
+                # Benign: the server sends nothing during silence between turns,
+                # so the 10 s socket timeout fires on any long thinking pause.
+                continue
             except Exception:
                 if not self._stop_evt.is_set():
                     self._fail("receive loop dropped")
