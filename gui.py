@@ -81,6 +81,10 @@ class LogWindow:
         else:
             self.config["mode"] = mode
 
+    def set_status(self, msg):
+        if self.status_var is not None:
+            self.status_var.set(msg)
+
     def refresh(self):
         if not self.tree:
             return

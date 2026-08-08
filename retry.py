@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+import urllib.error
 import urllib.request
 
 log = logging.getLogger("dictate.retry")
@@ -14,8 +15,15 @@ def _req(url, api_key, data=None, headers=None, method=None):
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, data=data, headers=h, method=method)
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        try:
+            body = err.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"HTTP {err.code}: {body or err.reason}") from None
 
 
 def transcribe_file(wav_path, api_key, language_codes=None):
@@ -26,7 +34,9 @@ def transcribe_file(wav_path, api_key, language_codes=None):
               headers={"Content-Type": "application/octet-stream"})
     body = {
         "audio_url": up["upload_url"],
-        "speech_model": "universal",
+        # Plural + full model names — bare "speech_model": "universal" 400s,
+        # and the API 400s on deprecated names too (it names the replacements).
+        "speech_models": ["universal-3-5-pro", "universal-2"],
         "language_detection": True,
     }
     job = _req(API + "/transcript", api_key,

@@ -21,6 +21,7 @@ import hotkey
 import inject
 import logstore
 import overlay
+import retry
 import stream
 import tray
 
@@ -276,9 +277,9 @@ class App:
         log.info("recording %s finished: %s (%.1fs, %d chars)",
                  rec_id, status, duration, len(transcript))
         self._finalize_done.set()
-        self.root.after(0, self._deliver, transcript, status, tail)
+        self.root.after(0, self._deliver, transcript, status, tail, rec_id, wav_path)
 
-    def _deliver(self, transcript, status, tail=""):
+    def _deliver(self, transcript, status, tail="", rec_id=None, wav_path=None):
         """Main thread: clipboard + paste per mode/status."""
         live = self.config.get("mode") == "live"
         if status == "cancelled":
@@ -295,11 +296,34 @@ class App:
             else:
                 inject.paste(self.root, processed)
         if status == "stream_failed":
-            # Recovery must be visible: surface the log window with the failed row.
+            # Recovery must be visible: surface the log window with the failed row,
+            # then recover from the local WAV without waiting for a Retry click.
             self.logwin.show()
+            if rec_id and wav_path and os.path.exists(wav_path):
+                self.logwin.set_status("Stream dropped — auto-retrying via async API…")
+                threading.Thread(target=self._auto_retry_worker,
+                                 args=(rec_id, wav_path), daemon=True).start()
         elif self.logwin.win and self.logwin.win.winfo_exists() \
                 and self.logwin.win.state() != "withdrawn":
             self.logwin.refresh()
+
+    def _auto_retry_worker(self, rec_id, wav_path):
+        """Clipboard-only recovery: focus may have moved by now, so never paste,
+        and never re-type in live mode (turns were already typed)."""
+        try:
+            text = retry.transcribe_file(wav_path, self.api_key,
+                                         self.config.get("language_codes"))
+        except Exception as err:
+            log.error("auto-retry for %s failed: %s", rec_id, err)
+            logstore.update(rec_id, status="retry_failed", error=str(err))
+            self.root.after(0, lambda: (self.logwin.refresh(),
+                                        self.logwin.set_status(f"Auto-retry failed: {err}")))
+            return
+        logstore.update(rec_id, transcript=text, status="ok_retried")
+        log.info("auto-retry for %s recovered %d chars", rec_id, len(text))
+        self.root.after(0, lambda: (self.logwin.refresh(),
+                                    inject.set_clipboard(self.root, self._process(text) or text),
+                                    self.logwin.set_status("Recovered — transcript copied to clipboard.")))
 
     # ---- misc ---------------------------------------------------------------
     def save(self):

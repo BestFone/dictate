@@ -7,11 +7,11 @@ Vision + feature spec: `PROJECT-VISION.md`. Single-user Windows tray app, Python
 |---|---|---|
 | Entry / controller | `main.py` | tk mainloop owns UI; other threads post commands via `App.request()` queue. DPI awareness set before `tk.Tk()` — don't remove, the pill mispositions without it |
 | Mic + WAV | `audio.py` | 16 kHz mono int16; WAV written in the audio callback — recording never depends on the network |
-| Streaming | `stream.py` | `wss://streaming.assemblyai.com/v3/ws`, `speech_model=universal-3-5-pro`, `language_codes` repeated in query string (verified accepted). NB: attr is `_stop_evt`, not `_stop` (Thread shadows `_stop`) |
+| Streaming | `stream.py` | `wss://streaming.assemblyai.com/v3/ws`, `speech_model=universal-3-5-pro`, `language_codes` repeated in query string (verified accepted). NB: attr is `_stop_evt`, not `_stop` (Thread shadows `_stop`). The server sends NOTHING during silence, and the connect `timeout=10` also applies to `recv()` — so `WebSocketTimeoutException` in the recv loop is benign (a thinking pause), never a failure |
 | Hotkey | `hotkey.py` | WH_KEYBOARD_LL hook suppressing ONLY the exact combo + Esc-while-recording. NOT `keyboard.add_hotkey(suppress=True)` (eats the Win key) and NOT RegisterHotKey (Win+Ctrl+Space is OS-reserved, registration fails). Explicit ctypes argtypes required — defaults truncate 64-bit handles (err 126) |
 | Overlay pill | `overlay.py` | click body or ✓ = done, ✕/Esc = cancel (cancel STILL saves + logs audio), mode badge bottom-left toggles live/paste. Calm by design: solid dot, log-scaled fixed-reference waveform (see feedback_calm-ambient-ui memory) |
 | Delivery | `inject.py` | clipboard+Ctrl+V (waits for hotkey keys released) or live `keyboard.write`. `apply_voice_commands`: spoken "new line"/"new paragraph" → breaks, only when punctuation-set-off (pause), so sentences about newlines survive. `remove_fillers`: regex um/uh/erm removal + punctuation/capitalization repair (no LLM); config `remove_fillers` (default true), checkbox in log window; log.jsonl always keeps raw text |
-| Log & recovery | `logstore.py`, `gui.py`, `retry.py` | `recordings/log.jsonl`; Retry = async `/v2/transcript` |
+| Log & recovery | `logstore.py`, `gui.py`, `retry.py` | `recordings/log.jsonl`; Retry = async `/v2/transcript` — body takes `speech_models` (PLURAL list of full names, currently `["universal-3-5-pro", "universal-2"]`; bare/deprecated names 400, and the 400 body names the replacements — `_req` surfaces it). A `stream_failed` take auto-retries this path from `main.py` and puts the result on the clipboard (never pastes/re-types — focus may have moved) |
 | Tray | `tray.py` | pystray, runs detached |
 
 ## Ops
