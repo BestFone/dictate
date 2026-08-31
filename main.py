@@ -4,6 +4,7 @@ Win+Ctrl+Space toggles recording (configurable in config.json). Esc or the
 pill's X cancels — audio is ALWAYS saved and logged, cancel included.
 Run with pythonw for no console window.
 """
+import collections
 import datetime
 import json
 import logging
@@ -105,7 +106,8 @@ class App:
         self.pill = overlay.OverlayPill(self.root,
                                         on_done=lambda: self.request("stop"),
                                         on_cancel=lambda: self.request("cancel"),
-                                        on_toggle_mode=lambda: self.request("toggle_live"))
+                                        on_toggle_mode=lambda: self.request("toggle_live"),
+                                        on_wake=lambda: self.request("wake"))
         self.logwin = gui.LogWindow(self.root, self.api_key, self.config, controller=self)
         self.tray = tray.Tray(self)
 
@@ -135,6 +137,10 @@ class App:
                     self.logwin.show()
                 elif cmd == "toggle_live":
                     self.set_mode("live" if self.config.get("mode") != "live" else "paste")
+                elif cmd == "wake" and self.recording:
+                    # "I'm still here" click on the silence warning
+                    self._last_voice = time.time()
+                    self.pill.set_silence(None)
                 elif cmd == "quit":
                     return self.quit()
         except queue.Empty:
@@ -183,6 +189,8 @@ class App:
         )
         self.session.start()
         self.recording = True
+        self._last_voice = time.time()
+        self._floor_hist = collections.deque(maxlen=600)  # 30 s of chunk RMS
         self.pill.show(live_mode=self.config.get("mode") == "live")
         self.tray.set_recording(True)
         self.hotkeys.grab_esc()
@@ -232,9 +240,37 @@ class App:
         if not self.recording:
             return
         self.pill.draw(self.recorder.levels)
+        self._check_silence()
         self.root.after(50, self._tick)  # matches the 50 ms audio chunk cadence
 
-    def stop_recording(self, cancelled=False):
+    def _check_silence(self):
+        """Auto-stop a forgotten-open mic. Fixed RMS cutoffs don't work here: the
+        webcam mic's AGC keeps a silent room at RMS ~290, so 'voice' is adaptive —
+        well above the rolling noise floor, sustained for 3 chunks (a mouse click
+        is 1-2 chunks and must not reset the timer). Validated offline against
+        real silent + speech WAVs: 0 false resets / 0 false warnings."""
+        timeout = self.config.get("silence_autostop_secs", 150)
+        if not timeout:
+            return
+        recent = list(self.recorder.levels)[-3:]
+        if recent:
+            self._floor_hist.append(recent[-1])
+            floor = sorted(self._floor_hist)[len(self._floor_hist) // 10]
+            thr = max(2.5 * floor, floor + 120)
+            if len(recent) == 3 and all(v > thr for v in recent):
+                self._last_voice = time.time()
+                self.pill.set_silence(None)
+                return
+        quiet = time.time() - self._last_voice
+        warn_at = max(timeout - 60, timeout / 2)
+        if quiet >= timeout:
+            log.info("silence auto-stop after %.0fs of no audio", quiet)
+            self.pill.set_silence(None)
+            self.stop_recording(auto=True)
+        elif quiet >= warn_at:
+            self.pill.set_silence(timeout - quiet)
+
+    def stop_recording(self, cancelled=False, auto=False):
         self.recording = False
         self.hotkeys.release_esc()
         self.tray.set_recording(False)
@@ -250,16 +286,19 @@ class App:
         # Finalize off the UI thread (waits for the last Turns), then deliver.
         self._finalize_done.clear()
         threading.Thread(target=self._finalize,
-                         args=(session, rec_id, wav_path, duration, cancelled),
+                         args=(session, rec_id, wav_path, duration, cancelled, auto),
                          daemon=True).start()
 
-    def _finalize(self, session, rec_id, wav_path, duration, cancelled):
+    def _finalize(self, session, rec_id, wav_path, duration, cancelled, auto=False):
         transcript = ""
         failed = True
         if session:
             session.join(timeout=8)
             transcript = session.transcript()
-            failed = session.failed or (not transcript and duration > 1.0)
+            # Empty transcript normally means the stream silently died — but a
+            # silence auto-stopped take is GENUINELY empty; don't retry those.
+            failed = session.failed or (not transcript and duration > 1.0
+                                        and not auto)
         status = ("cancelled" if cancelled
                   else "ok" if not failed
                   else "stream_failed")

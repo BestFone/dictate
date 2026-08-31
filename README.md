@@ -7,6 +7,7 @@ A tiny Wispr-Flow-style dictation app: hit a global hotkey, talk, and the transc
 - Two delivery modes (toggle on the pill): **live** (types as you speak) or **paste** (clipboard + Ctrl+V at the end).
 - Spoken "new line" / "new paragraph" become real line breaks; um/uh fillers are removed (configurable).
 - Every take is saved as WAV + logged to `recordings/log.jsonl`. If the network drops or the app crashes mid-take, nothing is lost — the log window offers a Retry that re-submits the saved audio through AssemblyAI's async API.
+- Forgot to stop it? After `silence_autostop_secs` of no voice (default 150) the take finishes itself. The pill grows an amber countdown for the last minute — click it, or just talk, to keep going.
 - Multilingual: set `language_codes` (e.g. `["en", "he"]` for mixed English/Hebrew — Hebrew comes back in Hebrew script).
 
 See `PROJECT-VISION.md` for the full design notes.
@@ -46,6 +47,7 @@ On first run, `config.json` is created automatically from `config.example.json`.
 | `input_device` | `null` | `null` = system default microphone (see below) |
 | `autopaste` | `true` | In paste mode, press Ctrl+V for you (vs just filling the clipboard) |
 | `streaming_mode` | `balanced` | AssemblyAI latency-vs-accuracy tradeoff, passed through as-is |
+| `silence_autostop_secs` | `150` | Auto-finish a take after this many seconds with no voice (`0` disables it) |
 
 ### Finding your microphone
 

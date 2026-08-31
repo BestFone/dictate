@@ -9,5 +9,6 @@
   "sample_rate": 16000,
   "input_device": null,
   "autopaste": true,
-  "streaming_mode": "balanced"
+  "streaming_mode": "balanced",
+  "silence_autostop_secs": 150
 }

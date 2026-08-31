@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 
 BASE_W, BASE_H = 320, 56
+WARN_EXTRA_H = 34  # extra height for the silence-warning band
 BARS = 23
 BG = "#1e1f24"
 FG = "#e8e8ea"
@@ -19,25 +20,29 @@ BAR_DIM = "#2a5c44"
 
 
 class OverlayPill:
-    def __init__(self, root, on_done, on_cancel, on_toggle_mode=None):
+    def __init__(self, root, on_done, on_cancel, on_toggle_mode=None, on_wake=None):
         self.root = root
         # DPI scale: 1.0 at 96 dpi, 1.5 at 150% scaling
         self.s = max(1.0, root.winfo_fpixels("1i") / 96.0)
         self.w = int(BASE_W * self.s)
         self.h = int(BASE_H * self.s)
+        self.warn_h = self.h + int(WARN_EXTRA_H * self.s)
         self.on_done = on_done
         self.on_cancel = on_cancel
         self.on_toggle_mode = on_toggle_mode
+        self.on_wake = on_wake
         self.win = None
         self.canvas = None
         self.stream_ok = True
         self.live_mode = False
         self.started_at = None
+        self.silence_remaining = None  # secs until auto-stop, or None = no warning
         self._blink = False
 
     def show(self, live_mode=False):
         self.live_mode = live_mode
         self.stream_ok = True
+        self.silence_remaining = None
         self.started_at = time.time()
         if self.win is None:
             self.win = tk.Toplevel(self.root)
@@ -48,6 +53,7 @@ class OverlayPill:
                                     highlightthickness=0, cursor="hand2")
             self.canvas.pack()
             self.canvas.bind("<Button-1>", self._click)
+        self.canvas.config(height=self.h)
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
         y = sh - self.h - int(80 * self.s)
@@ -62,8 +68,28 @@ class OverlayPill:
     def set_stream_ok(self, ok):
         self.stream_ok = ok
 
+    def set_silence(self, remaining):
+        """remaining = secs until auto-stop (shows the warning band), None = clear."""
+        was_on = self.silence_remaining is not None
+        self.silence_remaining = remaining
+        now_on = remaining is not None
+        if was_on != now_on and self.win is not None:
+            new_h = self.warn_h if now_on else self.h
+            self.canvas.config(height=new_h)
+            # grow downward into the bottom margin; top edge stays put
+            self.win.geometry(f"{self.w}x{new_h}+{self.win.winfo_x()}+{self.win.winfo_y()}")
+
     def _click(self, event):
         # hit zones: mode badge bottom-left, X at right edge, rest = done
+        if self.silence_remaining is not None:
+            # warning active: ✓ and ✕ keep their meaning, anything else = "I'm here"
+            if event.x >= self.w - int(34 * self.s) and event.y < self.h:
+                self.on_cancel()
+            elif event.x >= self.w - int(66 * self.s) and event.y < self.h:
+                self.on_done()
+            elif self.on_wake:
+                self.on_wake()
+            return
         if (self.on_toggle_mode and event.x < 150 * self.s
                 and event.y > self.h - 18 * self.s):
             self.on_toggle_mode()
@@ -116,6 +142,14 @@ class OverlayPill:
         if not self.stream_ok:
             c.create_text(w - 40 * s, h - 8 * s, text="offline — recording locally",
                           fill=AMBER, font=("Segoe UI", 7), anchor="e")
+
+        # silence-warning band below the normal row
+        if self.silence_remaining is not None:
+            rem = max(0, int(self.silence_remaining))
+            c.create_text(w / 2, h + 17 * s,
+                          text=f"⚠ no audio — auto-stop in {rem // 60}:{rem % 60:02d}"
+                               " · click or speak",
+                          fill=AMBER, font=("Segoe UI", 9, "bold"))
 
         # done ✓ (green) — same action as clicking anywhere on the pill body
         c.create_line(w - 58 * s, h / 2, w - 52 * s, h / 2 + 6 * s,
