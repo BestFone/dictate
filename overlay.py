@@ -39,6 +39,8 @@ class OverlayPill:
         self.lang_badge = None   # e.g. "HE" for a Hebrew-only take, None = normal
         self.started_at = None
         self.silence_remaining = None  # secs until auto-stop, or None = no warning
+        self.held = 0      # live turns held because the target window isn't foreground
+        self._note_token = 0  # bumps on every show(); a stale note timer won't hide a new take
         self._blink = False
 
     def _ensure_win(self):
@@ -64,8 +66,30 @@ class OverlayPill:
         self.lang_badge = lang_badge
         self.stream_ok = True
         self.silence_remaining = None
+        self.held = 0
         self.started_at = time.time()
+        self._note_token += 1
         self._ensure_win()
+
+    def set_held(self, n):
+        self.held = n
+
+    def show_note(self, text, secs=5):
+        """After a take: a static amber note (no recording row), auto-hides.
+        Any click dismisses it. Used when live text was held, not typed."""
+        self._note_token += 1
+        token = self._note_token
+        self.started_at = None
+        self._ensure_win()
+        c, s = self.canvas, self.s
+        c.delete("all")
+        r = 7 * s
+        c.create_oval(14 * s, self.h / 2 - r, 14 * s + 2 * r, self.h / 2 + r,
+                      fill=AMBER, outline="")
+        c.create_text(40 * s, self.h / 2, text=text, fill=FG, anchor="w",
+                      width=self.w - 54 * s, font=("Segoe UI", 9))
+        self.root.after(int(secs * 1000),
+                        lambda: self._note_token == token and self.hide())
 
     def hide(self):
         if self.win is not None:
@@ -86,6 +110,10 @@ class OverlayPill:
             self.win.geometry(f"{self.w}x{new_h}+{self.win.winfo_x()}+{self.win.winfo_y()}")
 
     def _click(self, event):
+        if self.started_at is None:  # post-take note showing: click = dismiss
+            self._note_token += 1
+            self.hide()
+            return
         # hit zones: mode badge bottom-left, X at right edge, rest = done
         if self.silence_remaining is not None:
             # warning active: ✓ and ✕ keep their meaning, anything else = "I'm here"
@@ -152,8 +180,13 @@ class OverlayPill:
         else:
             c.create_text(x_mode, h - 8 * s, text="⏎ PASTE AT END", fill="#8b8d98",
                           font=("Segoe UI", 7, "bold"), anchor="w")
+        note = []
         if not self.stream_ok:
-            c.create_text(w - 40 * s, h - 8 * s, text="offline — recording locally",
+            note.append("offline — recording locally" if not self.held else "offline")
+        if self.held:  # calm, static: target window isn't foreground
+            note.append(f"{self.held} held — go back to resume")
+        if note:
+            c.create_text(w - 40 * s, h - 8 * s, text=" · ".join(note),
                           fill=AMBER, font=("Segoe UI", 7), anchor="e")
 
         # silence-warning band below the normal row

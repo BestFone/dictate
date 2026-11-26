@@ -109,6 +109,12 @@ class App:
         self._ended_turns = {}   # turn_order -> final text
         self._typed_turns = set()
         self._type_lock = threading.Lock()
+        # Live "hold and resume": turns are typed only while the window the
+        # take started in is foreground; otherwise they wait (see _type_pending).
+        self.target_hwnd = None  # None = not known yet (take started from tray/pill)
+        self._tick_n = 0         # _tick counter; held-turn poll runs every 2nd (100 ms)
+        self._held = 0          # ended turns waiting for the target window
+        self._flushing = False   # a _flush_held thread is running
         self._finalize_done = threading.Event()
         self._finalize_done.set()
 
@@ -152,6 +158,10 @@ class App:
                     self.logwin.show()
                 elif cmd == "toggle_live":
                     self.set_mode("live" if self.config.get("mode") != "live" else "paste")
+                elif cmd == "toggle_hold":
+                    self.config["live_hold"] = not self.hold_enabled()
+                    save_config(self.config)
+                    log.info("live_hold %s", "on" if self.config["live_hold"] else "off")
                 elif cmd == "wake" and self.recording:
                     # "I'm still here" click on the silence warning
                     self._last_voice = time.time()
@@ -192,6 +202,11 @@ class App:
         self.take_langs = langs
         self._ended_turns = {}
         self._typed_turns = set()
+        # Remember where live text should go. Our own windows (pill, log) read
+        # as None, and _on_target() then adopts the first outside window.
+        self.target_hwnd = inject.foreground_window()
+        self._held = 0
+        self._tick_n = 0
         self.recorder = audio.Recorder(sample_rate=self.config.get("sample_rate", 16000),
                                        device=self.config.get("input_device"))
         # Log the row up front: if we die mid-take, the log SHOWS a row stuck
@@ -264,23 +279,71 @@ class App:
             text = inject.remove_fillers(text)
         return text
 
+    def hold_enabled(self):
+        """Config `live_hold` (default on). Off = type wherever focus is, as
+        before hold-and-resume existed."""
+        return self.config.get("live_hold", True)
+
+    def _on_target(self):
+        """True if the take's target window is foreground right now (always
+        True with live_hold off). Checks windows, not the caret: another text
+        box in the same window still gets the text (accepted limit)."""
+        if not self.hold_enabled():
+            return True
+        fg = inject.foreground_window()
+        if self.target_hwnd is None and fg:
+            self.target_hwnd = fg  # take started from our own UI: adopt
+        return fg is not None and fg == self.target_hwnd
+
     def _type_pending(self):
-        """Type every ended-but-untyped turn, in order. Called from the ws
-        thread on new turns AND from the main thread when switching to live
-        mid-recording (catch-up on everything said before the switch)."""
+        """Type every ended-but-untyped turn, in order — but only while the
+        target window is foreground. Otherwise HOLD (leave untyped) from that
+        turn on; _tick flushes when the target comes back. Callers: ws thread
+        on new turns, set_mode's catch-up, and _flush_held. All serialize on
+        _type_lock, so typing never runs concurrently with itself."""
         with self._type_lock:
+            if not self.recording:
+                return  # stopped: _finalize owns everything untyped as the tail
             for order in sorted(self._ended_turns):
                 if order in self._typed_turns:
                     continue
+                if not self._on_target():
+                    break  # hold this turn and every later one, keeps order
                 self._typed_turns.add(order)
                 text = self._process(self._ended_turns[order])
                 if not text:
                     continue  # turn was pure filler
                 inject.type_text(text if text.endswith("\n") else text + " ")
+            held = sum(1 for o in list(self._ended_turns) if o not in self._typed_turns)
+            if held != self._held:
+                log.info("live: %d turn(s) held (target window not foreground)", held)
+            self._held = held
+            self.pill.set_held(held)  # plain attribute; the 50 ms draw picks it up
+
+    def _flush_held(self):
+        try:
+            self._type_pending()
+        finally:
+            self._flushing = False
 
     def _tick(self):
         if not self.recording:
             return
+        self._tick_n += 1
+        # Foreground is checked before every typed turn anyway; polling is only
+        # needed while turns are HELD, and 100 ms is soon enough to resume.
+        if self._held and self._tick_n % 2 == 0:
+            fg = inject.foreground_window()
+            if self.config.get("mode") != "live":
+                # switched to paste: held turns go out with the end-of-take paste
+                self._held = 0
+                self.pill.set_held(0)
+            elif not self._flushing and fg and (fg == self.target_hwnd
+                                                or not self.hold_enabled()):
+                # back on the target window (or hold just switched off): resume,
+                # off the UI thread
+                self._flushing = True
+                threading.Thread(target=self._flush_held, daemon=True).start()
         self.pill.draw(self.recorder.levels)
         self._check_silence()
         self.root.after(50, self._tick)  # matches the 50 ms audio chunk cadence
@@ -381,9 +444,26 @@ class App:
         elif transcript:
             processed = self._process(transcript) or transcript
             if live:
-                tail = self._process(tail)
-                if tail:  # finish typing what live mode hadn't gotten to yet
-                    inject.type_text(tail)
+                tail = self._process(tail)  # held turns + the last partial turn
+                # A click on the pill (✓) makes OUR window foreground (fg None):
+                # then trust the last turn-time check — nothing held = we were
+                # on the target.
+                fg = inject.foreground_window()
+                on_target = (not self.hold_enabled() or self.target_hwnd is None
+                             or fg == self.target_hwnd
+                             or (fg is None and not self._held))
+                if tail and on_target:
+                    inject.type_text(tail)  # finish what live mode hadn't typed
+                elif tail:
+                    # Target not foreground (other window / minimized / closed):
+                    # type nothing; the clipboard below holds the whole take.
+                    why = ("window closed" if not inject.window_exists(self.target_hwnd)
+                           else "you were in another window")
+                    log.info("live: %d held char(s) not typed (%s); full take on "
+                             "clipboard", len(tail), why)
+                    msg = f"Held text not typed ({why}) — whole take is on the clipboard"
+                    self.pill.show_note(msg)
+                    self.logwin.set_status(msg)
                 inject.set_clipboard(self.root, processed)
             elif not self.config.get("autopaste", True):
                 inject.set_clipboard(self.root, processed)

@@ -7,6 +7,7 @@ A tiny Wispr-Flow-style dictation app: hit a global hotkey, talk, and the transc
 - Two delivery modes (toggle on the pill): **live** (types as you speak) or **paste** (clipboard + Ctrl+V at the end).
 - Spoken "new line" / "new paragraph" become real line breaks; um/uh fillers are removed (configurable).
 - Every take is saved as WAV + logged to `recordings/log.jsonl`. If the network drops or the app crashes mid-take, nothing is lost — the log window offers a Retry that re-submits the saved audio through AssemblyAI's async API.
+- Live typing stays in the window you started in: switch to another window mid-take and the pill shows `N held — go back to resume`; the text is typed when you return. Turn it off with `live_hold` or the tray checkbox.
 - Forgot to stop it? After `silence_autostop_secs` of no voice (default 150) the take finishes itself. The pill grows an amber countdown for the last minute — click it, or just talk, to keep going.
 - Multilingual: set `language_codes` (e.g. `["en", "he"]` for mixed English/Hebrew — Hebrew comes back in Hebrew script).
 - **Win+Ctrl+Shift+Space** (or the tray menu's *Hebrew only — one take*) runs a single monolingual Hebrew take — no code-switching back into English. One-shot: the next normal press is multilingual again, and the pill shows a blue `HE ONLY` badge while it runs.
@@ -46,6 +47,7 @@ On first run, `config.json` is created automatically from `config.example.json`.
 | `hebrew_hotkey` | `windows+ctrl+shift+space` | Same, but forces a monolingual take (`""` disables the second hotkey) |
 | `hebrew_language_codes` | `["he"]` | What that hotkey/menu entry forces for one take |
 | `mode` | `live` | `live` types as you speak; `paste` delivers via clipboard at the end |
+| `live_hold` | `true` | Live mode types only into the window the take started in; switch away and the text waits, then resumes when you go back. `false` = type wherever focus is. Also a tray checkbox |
 | `language_codes` | `["en"]` | Languages to detect, e.g. `["en", "he"]` for an English/Hebrew mix |
 | `input_device` | `null` | `null` = system default microphone (see below) |
 | `autopaste` | `true` | In paste mode, press Ctrl+V for you (vs just filling the clipboard) |

@@ -1,5 +1,5 @@
 """System tray icon (pystray) — mic glyph; menu: record, Hebrew-only take, log
-window, live mode, quit. Right-click IS the menu (pystray); left-click runs the
+window, live mode, live hold, quit. Right-click IS the menu (pystray); left-click runs the
 default item, so a Hebrew take is a menu entry, not its own mouse binding."""
 import pystray
 from PIL import Image, ImageDraw
@@ -43,6 +43,11 @@ class Tray:
                 pystray.MenuItem("Live typing mode",
                                  lambda: self.c.request("toggle_live"),
                                  checked=lambda item: self.c.config.get("mode") == "live"),
+                # Live typing only goes into the window the take started in;
+                # in another window the text waits and resumes when you're back.
+                pystray.MenuItem("Live: hold text while I'm in another window",
+                                 lambda: self.c.request("toggle_hold"),
+                                 checked=lambda item: self.c.hold_enabled()),
                 pystray.MenuItem("Quit", lambda: self.c.request("quit")),
             ),
         )

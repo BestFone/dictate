@@ -6,6 +6,7 @@
     "he"
   ],
   "mode": "live",
+  "live_hold": true,
   "language_codes": [
     "en"
   ],

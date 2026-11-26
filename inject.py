@@ -5,6 +5,7 @@ global hook). Key-state checks go through GetAsyncKeyState — installing the
 lib's hook listener breaks the Windows key.
 """
 import ctypes
+import os
 import re
 import time
 
@@ -45,6 +46,34 @@ def type_text(text):
     """Live-typing mode: unicode SendInput, works for Hebrew."""
     _wait_hotkey_release()
     keyboard.write(text, delay=0)
+
+
+# ---- live-typing target window ("hold and resume") -------------------------
+# SendInput goes to whatever is foreground, so live mode remembers the window
+# a take started in and only types while that window is foreground again.
+# Checks WINDOWS, not caret position: another text box in the same window
+# still receives the text (accepted limit).
+_u32 = ctypes.windll.user32
+_u32.GetForegroundWindow.restype = ctypes.c_void_p
+_u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                          ctypes.POINTER(ctypes.c_ulong)]
+_u32.IsWindow.argtypes = [ctypes.c_void_p]
+_MY_PID = os.getpid()
+
+
+def foreground_window():
+    """Foreground HWND as an int, or None. Windows of THIS process (the pill,
+    the log window, the tray menu) count as None — never a typing target."""
+    hwnd = _u32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    pid = ctypes.c_ulong()
+    _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return None if pid.value == _MY_PID else hwnd
+
+
+def window_exists(hwnd):
+    return bool(hwnd) and bool(_u32.IsWindow(hwnd))
 
 
 _CMD = re.compile(
