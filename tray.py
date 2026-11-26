@@ -1,6 +1,16 @@
-"""System tray icon (pystray) — mic glyph; menu: record, log window, live mode, quit."""
+"""System tray icon (pystray) — mic glyph; menu: record, Hebrew-only take, log
+window, live mode, quit. Right-click IS the menu (pystray); left-click runs the
+default item, so a Hebrew take is a menu entry, not its own mouse binding."""
 import pystray
 from PIL import Image, ImageDraw
+
+_KEY_NAMES = {"windows": "Win", "win": "Win", "ctrl": "Ctrl", "control": "Ctrl",
+              "shift": "Shift", "alt": "Alt"}
+
+
+def _pretty_hotkey(hk):
+    return "+".join(_KEY_NAMES.get(t, t.capitalize())
+                    for t in hk.lower().replace(" ", "").split("+"))
 
 
 def _icon_image(recording=False):
@@ -22,6 +32,13 @@ class Tray:
             menu=pystray.Menu(
                 pystray.MenuItem("Start/stop recording", lambda: self.c.request("toggle"),
                                  default=True),
+                # Right-click entry point for a one-shot Hebrew-only take; the
+                # hotkey is spelled out here so it never has to be remembered.
+                pystray.MenuItem(
+                    lambda item: "Hebrew only — one take  ("
+                                 + _pretty_hotkey(self.c.config.get(
+                                     "hebrew_hotkey", "windows+ctrl+shift+space")) + ")",
+                    lambda: self.c.request("toggle_he")),
                 pystray.MenuItem("Recordings log…", lambda: self.c.request("show_log")),
                 pystray.MenuItem("Live typing mode",
                                  lambda: self.c.request("toggle_live"),
@@ -33,9 +50,14 @@ class Tray:
     def start(self):
         self.icon.run_detached()
 
-    def set_recording(self, recording):
+    def set_recording(self, recording, langs=None):
         self.icon.icon = _icon_image(recording)
-        self.icon.title = "Dictate — recording…" if recording else "Dictate — ready"
+        if not recording:
+            self.icon.title = "Dictate — ready"
+        elif langs:
+            self.icon.title = "Dictate — recording… (%s only)" % "+".join(langs)
+        else:
+            self.icon.title = "Dictate — recording…"
 
     def stop(self):
         try:

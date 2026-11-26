@@ -36,8 +36,11 @@ def transcribe_file(wav_path, api_key, language_codes=None):
         "audio_url": up["upload_url"],
         # Plural + full model names — bare "speech_model": "universal" 400s,
         # and the API 400s on deprecated names too (it names the replacements).
-        "speech_models": ["universal-3-5-pro", "universal-2"],
+        "speech_models": ["assemblyai-stt-3-7", "universal-2"],
         "language_detection": True,
+        # STT-3.7 flipped both defaults to true (fillers kept); set them so a retry reads like the live stream.
+        "disfluencies": False,
+        "format_text": True,
     }
     job = _req(API + "/transcript", api_key,
                data=json.dumps(body).encode("utf-8"),

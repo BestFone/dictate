@@ -31,6 +31,14 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 KEY_PATH = os.path.join(os.path.expanduser("~"), ".config", "assemblyai", "api_key")
 SINGLETON_PORT = 51733
 
+# Contextual prompt for a Hebrew-only take — DELIBERATELY EMPTY. Measured on
+# two saved Hebrew WAVs (A/B/C/D through the real socket): `language_codes:
+# ["he"]` alone returned everything in Hebrew script, an ENGLISH-language prompt
+# describing the audio as Hebrew put English back INTO the output, and the same
+# prompt written in Hebrew changed nothing. AssemblyAI's own guidance is to
+# start with no prompt. Set "hebrew_prompt" in config.json to experiment.
+HEBREW_PROMPT = ""
+
 logging.basicConfig(
     filename=os.path.join(APP_DIR, "app.log"),
     level=logging.INFO,
@@ -97,6 +105,7 @@ class App:
         self.recorder = None
         self.session = None
         self.rec_id = None
+        self.take_langs = None   # per-take language override (Hebrew-only take)
         self._ended_turns = {}   # turn_order -> final text
         self._typed_turns = set()
         self._type_lock = threading.Lock()
@@ -129,6 +138,12 @@ class App:
                 cmd = self.commands.get_nowait()
                 if cmd == "toggle":
                     self.stop_recording() if self.recording else self.start_recording()
+                elif cmd == "toggle_he":
+                    # One-shot Hebrew-only take; the next normal press is en+he
+                    # again, so there is no mode left switched on by accident.
+                    (self.stop_recording() if self.recording
+                     else self.start_recording(langs=self.hebrew_langs(),
+                                               prompt=self.hebrew_prompt()))
                 elif cmd == "stop" and self.recording:
                     self.stop_recording()
                 elif cmd == "cancel" and self.recording:
@@ -148,19 +163,33 @@ class App:
         self.root.after(30, self._poll)
 
     # ---- hotkeys ----------------------------------------------------------
+    def hebrew_langs(self):
+        return self.config.get("hebrew_language_codes") or ["he"]
+
+    def hebrew_prompt(self):
+        return self.config.get("hebrew_prompt", HEBREW_PROMPT)
+
     def _register_hotkey(self):
         self.hotkeys = hotkey.HotkeyThread(
             self.config.get("hotkey", "windows+ctrl+space"),
             on_main=lambda: self.request("toggle"),
             on_esc=lambda: self.request("cancel"),
             esc_active=lambda: self.recording,
+            extra=[(self.config.get("hebrew_hotkey", "windows+ctrl+shift+space"),
+                    lambda: self.request("toggle_he"))],
         )
         self.hotkeys.start()
         self.hotkeys.wait_ready()
 
     # ---- recording lifecycle -----------------------------------------------
-    def start_recording(self):
+    def start_recording(self, langs=None, prompt=None):
+        """langs/prompt override the config for THIS take only (one-shot).
+        A single code (e.g. ["he"]) makes it a monolingual session; the prompt
+        additionally DESCRIBES the audio as Hebrew, which is the second (and
+        weaker) documented steer — together they stop the model code-switching
+        back into English/transliteration."""
         self.rec_id = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        self.take_langs = langs
         self._ended_turns = {}
         self._typed_turns = set()
         self.recorder = audio.Recorder(sample_rate=self.config.get("sample_rate", 16000),
@@ -172,6 +201,7 @@ class App:
             "wav": os.path.join(logstore.REC_DIR, f"{self.rec_id}.wav"),
             "transcript": "", "status": "recording", "duration": 0,
             "model": self.config.get("speech_model"), "error": None,
+            "langs": langs or self.config.get("language_codes") or [],
         })
         try:
             self.recorder.start(self.rec_id)
@@ -182,8 +212,15 @@ class App:
             self.pill.set_stream_ok(False)
             self.root.after(1500, self.pill.hide)
             return
+        take_config = self.config
+        if langs or prompt:
+            take_config = dict(self.config)
+            if langs:
+                take_config["language_codes"] = langs
+            if prompt:
+                take_config["prompt"] = prompt
         self.session = stream.StreamSession(
-            self.api_key, self.recorder.send_queue, self.config,
+            self.api_key, self.recorder.send_queue, take_config,
             on_turn=self._on_turn,
             on_status=lambda s: self.root.after(0, self._on_stream_status, s),
         )
@@ -191,15 +228,20 @@ class App:
         self.recording = True
         self._last_voice = time.time()
         self._floor_hist = collections.deque(maxlen=600)  # 30 s of chunk RMS
-        self.pill.show(live_mode=self.config.get("mode") == "live")
-        self.tray.set_recording(True)
+        self.pill.show(live_mode=self.config.get("mode") == "live",
+                       lang_badge=" ".join(c.upper() for c in langs) if langs else None)
+        self.tray.set_recording(True, langs=langs)
         self.hotkeys.grab_esc()
         self._tick()
-        log.info("recording %s started", self.rec_id)
+        log.info("recording %s started (langs=%s)", self.rec_id,
+                 langs or self.config.get("language_codes"))
 
     def _on_stream_status(self, status):
-        if status == "failed":
+        # Pill dot goes amber while a dropped stream reconnects, back on success.
+        if status in ("failed", "reconnecting"):
             self.pill.set_stream_ok(False)
+        elif status == "connected" and self.recording:
+            self.pill.set_stream_ok(True)
 
     def _on_turn(self, msg):
         """ws thread. Record every ended turn; in live mode type it right away.
@@ -293,15 +335,28 @@ class App:
         transcript = ""
         failed = True
         if session:
-            session.join(timeout=8)
+            # After a reconnect the resent backlog goes at real time, so the
+            # stream can still be catching up when the take stops.
+            backlog = session.backlog_secs()
+            behind = bool(session.drops) and backlog > stream.MAX_STOP_WAIT
+            if cancelled:
+                session.abort()   # audio is saved either way; don't wait on the server
+            elif behind:
+                # Waiting out a long backlog is slower than the async retry.
+                log.info("%.0fs backlog at stop after reconnect; handing to async retry",
+                         backlog)
+                session.abort()
+            session.join(timeout=8 + (0 if behind else backlog))
             transcript = session.transcript()
             # Empty transcript normally means the stream silently died — but a
             # silence auto-stopped take is GENUINELY empty; don't retry those.
-            failed = session.failed or (not transcript and duration > 1.0
-                                        and not auto)
+            # Still alive = stuck reconnecting: let the async retry recover it.
+            failed = session.failed or behind or session.is_alive() or (
+                not transcript and duration > 1.0 and not auto)
         status = ("cancelled" if cancelled
-                  else "ok" if not failed
-                  else "stream_failed")
+                  else "stream_failed" if failed
+                  else "ok_reconnected" if session.drops
+                  else "ok")
         # Live mode: whatever never got typed (last partial turn, or turns from
         # before a mode switch that stayed in paste mode) is the tail.
         tail = ""
@@ -355,8 +410,9 @@ class App:
         except Exception as err:
             log.error("auto-retry for %s failed: %s", rec_id, err)
             logstore.update(rec_id, status="retry_failed", error=str(err))
-            self.root.after(0, lambda: (self.logwin.refresh(),
-                                        self.logwin.set_status(f"Auto-retry failed: {err}")))
+            # err=err: Python deletes `err` when the except block ends.
+            self.root.after(0, lambda err=err: (self.logwin.refresh(),
+                                                self.logwin.set_status(f"Auto-retry failed: {err}")))
             return
         logstore.update(rec_id, transcript=text, status="ok_retried")
         log.info("auto-retry for %s recovered %d chars", rec_id, len(text))

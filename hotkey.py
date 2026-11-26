@@ -73,33 +73,49 @@ def parse(hotkey_str):
 
 
 class HotkeyThread(threading.Thread):
-    """on_main fires on the configured combo; on_esc fires on Esc whenever
-    esc_active() is true (i.e. while recording). Both are suppressed from
-    reaching other apps; nothing else is intercepted."""
+    """on_main fires on the configured combo; extra is [(hotkey_str, callback)]
+    for additional combos (e.g. the Hebrew-only take). on_esc fires on Esc
+    whenever esc_active() is true (i.e. while recording). All are suppressed
+    from reaching other apps; nothing else is intercepted."""
 
-    def __init__(self, hotkey_str, on_main, on_esc, esc_active=lambda: False):
+    def __init__(self, hotkey_str, on_main, on_esc, esc_active=lambda: False,
+                 extra=()):
         super().__init__(daemon=True)
-        self.on_main = on_main
         self.on_esc = on_esc
         self.esc_active = esc_active
-        self.mods, self.vk = parse(hotkey_str)
+        combos = [(*parse(hotkey_str), on_main, hotkey_str)]
+        for hk, callback in extra:
+            if hk:
+                combos.append((*parse(hk), callback, hk))
+        # Most modifiers first: win+ctrl+SHIFT+space must be matched before
+        # win+ctrl+space, whose modifiers are also held when shift is down.
+        self.combos = sorted(combos, key=lambda c: -len(c[0]))
         self.hotkey_str = hotkey_str
         self.tid = None
         self._proc = HOOKPROC(self._hook)  # keep a reference or it's GC'd
 
-    def _mods_held(self):
+    @staticmethod
+    def _mods_held(mods):
         return all(any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in group)
-                   for group in self.mods)
+                   for group in mods)
 
     def _hook(self, n_code, w_param, l_param):
         if n_code == 0 and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
             kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-            if kb.vkCode == self.vk and self._mods_held():
-                try:
-                    self.on_main()
-                except Exception:
-                    log.exception("hotkey callback")
-                return 1  # swallow just this key event
+            for mods, vk, callback, _name in self.combos:
+                if kb.vkCode == vk and self._mods_held(mods):
+                    if MOD_VKS["win"] in mods:
+                        # Win+<swallowed key> looks like a lone Win tap, so
+                        # Start opens on release. A dummy key in between
+                        # (vk 0xE8, unassigned — AutoHotkey's "menu mask")
+                        # tells Windows another key was pressed.
+                        user32.keybd_event(0xE8, 0, 0, 0)
+                        user32.keybd_event(0xE8, 0, 2, 0)  # KEYEVENTF_KEYUP
+                    try:
+                        callback()
+                    except Exception:
+                        log.exception("hotkey callback")
+                    return 1  # swallow just this key event
             if kb.vkCode == VK_ESC and self.esc_active():
                 try:
                     self.on_esc()
@@ -114,7 +130,7 @@ class HotkeyThread(threading.Thread):
         if not handle:
             log.error("SetWindowsHookEx failed (err %d)", kernel32.GetLastError())
             return
-        log.info("hotkey %s hooked", self.hotkey_str)
+        log.info("hotkeys hooked: %s", ", ".join(c[3] for c in self.combos))
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             pass  # LL hook is serviced by this loop; no messages expected

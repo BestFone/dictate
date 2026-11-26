@@ -17,6 +17,7 @@ RED = "#e5484d"
 AMBER = "#f5a524"
 BAR = "#4cc38a"
 BAR_DIM = "#2a5c44"
+LANG = "#7aa2f7"   # language badge (Hebrew-only take)
 
 
 class OverlayPill:
@@ -35,15 +36,12 @@ class OverlayPill:
         self.canvas = None
         self.stream_ok = True
         self.live_mode = False
+        self.lang_badge = None   # e.g. "HE" for a Hebrew-only take, None = normal
         self.started_at = None
         self.silence_remaining = None  # secs until auto-stop, or None = no warning
         self._blink = False
 
-    def show(self, live_mode=False):
-        self.live_mode = live_mode
-        self.stream_ok = True
-        self.silence_remaining = None
-        self.started_at = time.time()
+    def _ensure_win(self):
         if self.win is None:
             self.win = tk.Toplevel(self.root)
             self.win.overrideredirect(True)
@@ -60,6 +58,14 @@ class OverlayPill:
         self.win.geometry(f"{self.w}x{self.h}+{(sw - self.w) // 2}+{y}")
         self.win.deiconify()
         self.win.lift()
+
+    def show(self, live_mode=False, lang_badge=None):
+        self.live_mode = live_mode
+        self.lang_badge = lang_badge
+        self.stream_ok = True
+        self.silence_remaining = None
+        self.started_at = time.time()
+        self._ensure_win()
 
     def hide(self):
         if self.win is not None:
@@ -132,12 +138,19 @@ class OverlayPill:
         c.create_text(w - 66 * s, h / 2, text=f"{secs // 60}:{secs % 60:02d}",
                       fill=FG, font=("Segoe UI", 11, "bold"), anchor="e")
 
+        # language badge — a one-shot monolingual take must SAY so while it runs
+        x_mode = 14 * s
+        if self.lang_badge:
+            item = c.create_text(14 * s, h - 8 * s, text=f"{self.lang_badge} ONLY",
+                                 fill=LANG, font=("Segoe UI", 7, "bold"), anchor="w")
+            x_mode = c.bbox(item)[2] + 8 * s
+
         # mode badge (clickable — toggles live typing vs paste at end)
         if self.live_mode:
-            c.create_text(14 * s, h - 8 * s, text="⚡ LIVE TYPING", fill=BAR,
+            c.create_text(x_mode, h - 8 * s, text="⚡ LIVE TYPING", fill=BAR,
                           font=("Segoe UI", 7, "bold"), anchor="w")
         else:
-            c.create_text(14 * s, h - 8 * s, text="⏎ PASTE AT END", fill="#8b8d98",
+            c.create_text(x_mode, h - 8 * s, text="⏎ PASTE AT END", fill="#8b8d98",
                           font=("Segoe UI", 7, "bold"), anchor="w")
         if not self.stream_ok:
             c.create_text(w - 40 * s, h - 8 * s, text="offline — recording locally",
